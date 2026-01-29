@@ -3,20 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FaceID Debug Demo</title>
+    <title>Personal FaceID Demo</title>
     <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
     <style>
-        body { margin: 0; background: #121212; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; }
-        .container { position: relative; }
+        body { margin: 0; background: #0b0e14; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; }
+        .container { position: relative; border: 4px solid #1a1f29; border-radius: 15px; overflow: hidden; box-shadow: 0 0 50px rgba(0,255,150,0.1); }
+        video { display: block; }
         canvas { position: absolute; top: 0; left: 0; }
-        video { border-radius: 8px; border: 2px solid #444; }
-        #status { margin: 20px; padding: 10px; border-radius: 5px; background: #222; }
+        #status-box { margin-bottom: 20px; padding: 15px 30px; border-radius: 50px; background: #1a1f29; font-weight: bold; font-size: 1.2rem; border: 1px solid #333; transition: 0.3s; }
+        .granted { border-color: #00ff96 !important; color: #00ff96; box-shadow: 0 0 20px rgba(0,255,150,0.3); }
+        .denied { border-color: #ff3e3e !important; color: #ff3e3e; }
+        .loading { color: #f39c12; }
     </style>
 </head>
 <body>
 
-    <h2>Biometric Face Scan Demo</h2>
-    <div id="status">Status: Initializing...</div>
+    <div id="status-box" class="loading">Initializing Biometric Systems...</div>
 
     <div class="container">
         <video id="video" width="640" height="480" autoplay muted></video>
@@ -24,25 +26,43 @@
 
     <script>
         const video = document.getElementById('video');
-        const status = document.getElementById('status');
+        const statusBox = document.getElementById('status-box');
+        let faceMatcher;
 
-        async function setup() {
+        async function init() {
+            const MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
+            
             try {
-                status.innerText = "Status: Loading AI Models...";
-                // Using a reliable mirror for models
-                const MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
-                
-                await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
-                await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
-                
-                status.innerText = "Status: Models Loaded. Requesting Camera...";
-                
+                statusBox.innerText = "Loading AI Models...";
+                await Promise.all([
+                    faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                    faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                    faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+                    faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL)
+                ]);
+
+                statusBox.innerText = "Syncing Authorized Identity...";
+                const labeledDescriptors = await loadUserIdentity();
+                faceMatcher = new faceapi.FaceMatcher(labeledDescriptors, 0.55); 
+
+                statusBox.innerText = "System Ready. Activate Camera...";
                 const stream = await navigator.mediaDevices.getUserMedia({ video: {} });
                 video.srcObject = stream;
             } catch (err) {
-                status.innerText = "Error: " + err.message;
-                console.error(err);
+                statusBox.innerText = "AUTH ERROR: " + err.message;
+                statusBox.className = "denied";
             }
+        }
+
+        async function loadUserIdentity() {
+            const label = 'Authorized User';
+            const img = await faceapi.fetchImage('./me.jpg');
+            const detections = await faceapi.detectSingleFace(img).withFaceLandmarks().withFaceDescriptor();
+            
+            if (!detections) {
+                throw new Error("Could not find a face in 'me.jpg'");
+            }
+            return new faceapi.LabeledFaceDescriptors(label, [detections.descriptor]);
         }
 
         video.addEventListener('play', () => {
@@ -52,24 +72,42 @@
             faceapi.matchDimensions(canvas, displaySize);
 
             setInterval(async () => {
-                const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
-                const resizedDetections = faceapi.resizeResults(detections, displaySize);
-                
-                canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
-                faceapi.draw.drawDetections(canvas, resizedDetections);
-                faceapi.draw.drawFaceLandmarks(canvas, resizedDetections);
+                const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+                    .withFaceLandmarks()
+                    .withFaceDescriptors();
 
-                if (detections.length > 0) {
-                    status.style.color = "#0f0";
-                    status.innerText = "Status: Identity Verified ✅";
-                } else {
-                    status.style.color = "white";
-                    status.innerText = "Status: Scanning...";
+                const resizedDetections = faceapi.resizeResults(detections, displaySize);
+                canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+
+                const results = resizedDetections.map(d => faceMatcher.findBestMatch(d.descriptor));
+
+                if (results.length === 0) {
+                    statusBox.innerText = "Scanning for Face...";
+                    statusBox.className = "loading";
                 }
+
+                results.forEach((result, i) => {
+                    const box = resizedDetections[i].detection.box;
+                    const isAuthorized = result.label === 'Authorized User';
+                    
+                    const drawBox = new faceapi.draw.DrawBox(box, { 
+                        label: isAuthorized ? "IDENTITY VERIFIED" : "ACCESS DENIED",
+                        boxColor: isAuthorized ? "#00ff96" : "#ff3e3e"
+                    });
+                    drawBox.draw(canvas);
+
+                    if (isAuthorized) {
+                        statusBox.innerText = "WELCOME BACK, OWNER ✅";
+                        statusBox.className = "granted";
+                    } else {
+                        statusBox.innerText = "UNAUTHORIZED USER DETECTED ❌";
+                        statusBox.className = "denied";
+                    }
+                });
             }, 100);
         });
 
-        setup();
+        init();
     </script>
 </body>
 </html>
