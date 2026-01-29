@@ -56,7 +56,7 @@
 
         async function loadUserIdentity() {
             const label = 'Authorized User';
-            const img = await faceapi.fetchImage('./me.jpg');
+            const img = await faceapi.fetchImage('me.jpg');
             const detections = await faceapi.detectSingleFace(img).withFaceLandmarks().withFaceDescriptor();
             
             if (!detections) {
